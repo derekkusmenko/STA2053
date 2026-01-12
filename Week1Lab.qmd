@@ -1,0 +1,127 @@
+---
+title: "Week1Lab"
+author: "Derek Kusmenko"
+format: pdf
+editor: visual
+---
+
+# Lab Exercises
+
+1. Plot the ratio of male to female mortality rates over time for ages 10,20,30 and 40 (different color for each age) and change the theme 
+2. Find the age that has the highest female mortality rate each year 
+3. Use the `summarize(across())` syntax to calculate the standard deviation of mortality rates by age for the Male, Female and Total populations. 
+4. The Canadian HMD also provides population sizes over time
+(https://www.prdh.umontreal.ca/BDLC/data/ont/Population.txt). Use these to calculate the population weighted average mortality rate separately for males and females, for every year. Make a nice line plot showing the result (with meaningful labels/titles) and briefly comment on what you see (1 sentence). Hint: `left_join` will probably be useful here. 
+
+```{r}
+#| warning: false
+library(tidyverse)
+dm <- read_table("https://www.prdh.umontreal.ca/BDLC/data/ont/Mx_1x1.txt",
+                 skip = 2, col_types = "dcddd")
+head(dm)
+
+```
+
+## 1.
+
+```{r}
+dm <- dm |> 
+  mutate(mf_ratio = Male/Female)
+```
+
+
+
+```{r}
+dp <- dm |> 
+  filter(Age==10|Age==20|Age==30|Age==40) |> 
+  select(Year,Age,mf_ratio) |> 
+  pivot_longer(mf_ratio, names_to = "Ratio", values_to = "Mortality")
+```
+
+```{r}
+dp |> 
+  ggplot(aes(x = Year, y = Mortality, color = Age)) + 
+  geom_line() + 
+  scale_color_brewer(palette = "Set1") +
+  labs(title = "Ratio of Male to Female Mortality Rates",
+       y = "Mortality Rate") + 
+  theme_bw(base_size = 14)
+```
+
+
+## 2.
+
+```{r}
+dm |>
+  group_by(Year) |>
+  mutate(maxFemale = max(Female, na.rm = TRUE)) |>
+  filter(Female == maxFemale) |>
+  select(Year, Age, Female)
+
+```
+
+## 3. 
+
+```{r}
+#| warning: false
+dm |>
+  select(-mf_ratio) |>
+  group_by(Age) |> 
+  summarize(across(Female:Total, sd)) |>
+  mutate(Age = as.numeric(Age)) |>
+  arrange(Age)
+
+```
+
+
+
+## 4.
+
+```{r}
+dmpop <- read_table("https://www.prdh.umontreal.ca/BDLC/data/ont/Population.txt",
+                    skip = 2, col_types = "dcddd")
+head(dmpop)
+
+```
+
+```{r}
+dmpop_long <- dmpop |>
+  pivot_longer(Female:Total, names_to = "Sex", values_to = "Population")
+
+dm_long <- dm |>
+  select(-mf_ratio) |>
+  pivot_longer(Female:Total, names_to = "Sex", values_to = "Mortality")
+
+```
+
+
+
+```{r}
+df <- dm_long |>
+  left_join(dmpop_long, join_by(Year, Age, Sex))
+
+```
+
+
+
+
+```{r}
+df_p <- df |>
+  pivot_wider(names_from = "Sex", values_from = c("Mortality", "Population")) |>
+  group_by(Year) |>
+  mutate(Weighted_F = weighted.mean(Mortality_Female, Population_Female)) |>
+  mutate(Weighted_M = weighted.mean(Mortality_Male, Population_Male)) |>
+  pivot_longer(Weighted_F:Weighted_M, names_to = "Sex", values_to = "Weighted_Mortality") |>
+  select(Year, Sex, Weighted_Mortality)
+
+df_p |>
+  ggplot(aes(x = Year, y = Weighted_Mortality, color = Sex)) +
+  geom_line()+
+  scale_color_brewer(palette = "Set1",labels = c("Female", "Male")) +
+  labs(title = "Population Weighted Average Mortality Rates of Ontario",
+       y = "Mortality Rate") + 
+  theme_bw(base_size = 10)
+  
+
+```
+From this plot, we see that the population weighted average mortality rates have generally fallen over time, however, since roughly 2010, mortality rates have begun increasing for both males and females.
