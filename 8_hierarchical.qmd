@@ -1,0 +1,156 @@
+---
+title: "Week 8: Hierarchical models"
+date: today
+date-format: "DD/MM/YY"
+format: pdf
+execute: 
+  warning: false
+  message: false
+---
+
+# Radon
+
+The goal of this lab is to fit this model to the radon data:
+
+$$
+\begin{aligned}
+y_{i} | \alpha_{j[i]} & \sim N\left(\alpha_{j[i]}+\beta x_{i}, \sigma_{y}^{2}\right), \text { for } i=1,2, \ldots, n \\
+\alpha_{j} & \sim N\left(\gamma_{0}+\gamma_{1} u_{j}, \sigma_{\alpha}^{2}\right), \text { for } j=1,2, \ldots, J
+\end{aligned}
+$$
+
+i.e. varying intercepts, fixed slope on floor. I want you to
+
+-   reproduce the graph on slide 53
+-   plot samples from the posterior predictive distribution for a new household in county 2 with basement level measurement, compared to samples from the posterior distribution of the mean county effect in county 2 (i.e., a graph similar to slide 45).
+
+Here's code to get the data into a useful format:
+
+```{r}
+library(tidyverse)
+# house level data
+d <- read.table(url("https://sites.stat.columbia.edu/gelman/arm/examples/radon/srrs2.dat"), header=T, sep=",")
+
+# deal with zeros, select what we want, makke a fips variable to match on 
+d <- d |> 
+  mutate(activity = ifelse(activity==0, 0.1, activity)) |> 
+  mutate(fips = stfips * 1000 + cntyfips) |>   
+  dplyr::select(fips, state, county, floor, activity)
+
+# county level data
+cty <- read.table(url("https://sites.stat.columbia.edu/gelman/arm/examples/radon/cty.dat"), header = T, sep = ",")
+cty <- cty |> mutate(fips = 1000 * stfips + ctfips) |> dplyr::select(fips, Uppm)
+
+# filter to just be minnesota, join them and then select the variables of interest. 
+dmn <- d |> 
+  filter(state=="MN") |> 
+  dplyr::select(fips, county, floor, activity) |> 
+  left_join(cty)
+head(dmn)
+
+```
+
+Note, in the model:
+
+-   $y_i$ is log(activity)
+-   $x_i$ is floor
+-   $u_i$ is log(Uppm)
+
+Suggested steps
+
+1.  write Stan model (note, you will need samples from post pred distribution, either do in Stan or later in R)
+2.  Get data in stan format
+
+```{r}
+# create the county level index
+county_levels <- unique(dmn$county)
+# assign to each county
+dmn$county_idx <- as.integer(factor(dmn$county, levels = county_levels))
+
+# create county level log(uppm) measurements u_j
+u_j <- dmn |> 
+  group_by(county_idx) |> 
+  summarize(u = first(log(Uppm))) |> # each county level the same so take the first value
+  arrange(county_idx) |>
+  pull(u)
+
+# put data into list for stan file 
+stan_data <- list(
+  N = nrow(dmn),
+  J = length(county_levels),
+  county = dmn$county_idx,
+  x = dmn$floor,
+  y = log(dmn$activity),
+  u = u_j
+)
+```
+
+3.  Run the model
+
+```{r}
+library(rstan)
+fit <- stan(
+  file = "week8.stan", 
+  data = stan_data, 
+  iter = 2000, 
+  chains = 4
+)
+```
+
+4.  For $\alpha$ plot, get median estimates of alpha's, and the 2.5th and 97.5th percentiles. Also get the median (mean fine, easier to pull from summary) of the gamma0 and gamma1. You can then use `geom_abline()` to plot mean regression line.
+
+```{r}
+# use summary to get median and percentile calculations
+alpha_summ <- summary(fit, pars = "alpha")$summary 
+
+# create df to plot
+alpha_df <- data.frame(
+  county_idx = 1:J,
+  u = u_j,
+  median = alpha_summ[, "50%"],
+  lower = alpha_summ[, "2.5%"],
+  upper = alpha_summ[, "97.5%"]
+)
+
+# use summary to get median for gamma0 and gamma1
+gamma_summ<- summary(fit, c("gamma0", "gamma1"))$summary
+gamma0_median <- gamma_summ["gamma0", "50%"]
+gamma1_median <- gamma_summ["gamma1", "50%"] 
+
+# plot the mean regression line
+ggplot(alpha_df, aes(x = u, y = median)) +
+  geom_point(size = 1.5) +
+  geom_errorbar(aes(ymin = lower, ymax = upper)) +
+  geom_abline(intercept = gamma0_median, slope = gamma1_median, color = "black") + 
+  labs(
+    title = "Illustration of model fit for MN",
+    x = "log(uranium)",
+    y = "alpha"
+  ) +
+  theme_bw()
+```
+
+5.  For the predicted y plot, you will need your posterior predictive samples for $y$'s and then just use `geom_density()`
+
+```{r}
+# get samples for alpha_2 and new y's
+alpha_2 <- extract(fit)$alpha[, 2]
+y_new_county2 <- extract(fit)$y_new_county2
+
+# create df for plotting
+sample_df <- data.frame(
+  value = c(alpha_2, y_new_county2),
+  sample = rep(c("alpha_2", "y_new_county2"), 
+             each = length(alpha_2))
+)
+
+# plot the sample densities
+ggplot(sample_df, aes(x = value, fill = sample)) +
+  geom_density(alpha = 0.6) +
+  labs(
+    title = "Distribution of New Household in County 2 vs. County 2 Mean",
+    x = "log(radon)",
+    y = "Density"
+  ) +
+  theme_bw() 
+```
